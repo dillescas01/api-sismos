@@ -66,15 +66,21 @@ def lambda_handler(event, context):
             for row in rows:
                 batch.put_item(Item=row)
 
-        # Retornar los datos procesados
+        # Retornar los datos procesados directamente
         return {
             'statusCode': 200,
-            'body': json.dumps(rows)
+            'body': rows,
+            'headers': {
+                'Content-Type': 'application/json'
+            }
         }
 
     except Exception as e:
         # Manejar excepciones y retornar el error
         return {
             'statusCode': 500,
-            'body': f'Error en la ejecución: {str(e)}'
+            'body': {'error': str(e)},
+            'headers': {
+                'Content-Type': 'application/json'
+            }
         }
