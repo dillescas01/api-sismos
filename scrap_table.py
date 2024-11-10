@@ -1,64 +1,80 @@
-import requests # lib para acceso a paginas web y apis
-from bs4 import BeautifulSoup # lib para webscraping
-import boto3
+import requests
+import json
 import uuid
+import boto3
 
 def lambda_handler(event, context):
-    # URL de la página web que contiene la tabla
-    url = "https://ultimosismo.igp.gob.pe/ultimo-sismo/sismos-reportados"
+    # URL de la API de sismos
+    url = "https://ultimosismo.igp.gob.pe/api/ultimo-sismo/ajaxb/2024"
 
-    # Realizar la solicitud HTTP a la página web
-    response = requests.get(url)
-    if response.status_code != 200:
-        return {
-            'statusCode': response.status_code,
-            'body': 'Error al acceder a la página web'
-        }
-
-    # Parsear el contenido HTML de la página web
-    soup = BeautifulSoup(response.content, 'html.parser')
-
-    # Encontrar la tabla en el HTML
-    table = soup.find('table')
-    if not table:
-        return {
-            'statusCode': 404,
-            'body': 'No se encontró la tabla en la página web'
-        }
-
-    # Extraer los encabezados de la tabla
-    headers = [header.text for header in table.find_all('th')]
-
-    # Extraer las filas de la tabla
-    rows = []
-    for row in table.find_all('tr')[1:]:  # Omitir el encabezado
-        cells = row.find_all('td')
-        rows.append({headers[i+1]: cell.text for i, cell in enumerate(cells)})
-
-    # Guardar los datos en DynamoDB
-    dynamodb = boto3.resource('dynamodb')
-    table = dynamodb.Table('Sismos')
-
-    # Eliminar todos los elementos de la tabla antes de agregar los nuevos
-    scan = table.scan()
-    with table.batch_writer() as batch:
-        for each in scan['Items']:
-            batch.delete_item(
-                Key={
-                    'id': each['id']
-                }
-            )
-
-    # Insertar los nuevos datos
-    i = 1
-    for row in rows:
-        row['#'] = i
-        row['id'] = str(uuid.uuid4())  # Generar un ID único para cada entrada
-        table.put_item(Item=row)
-        i = i + 1
-
-    # Retornar el resultado como JSON
-    return {
-        'statusCode': 200,
-        'body': rows
+    # Encabezados para evitar bloqueos
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
     }
+
+    try:
+        # Realizar la solicitud a la API
+        response = requests.get(url, headers=headers)
+        
+        # Verificar el código de estado de la respuesta
+        if response.status_code != 200:
+            return {
+                'statusCode': response.status_code,
+                'body': 'Error al acceder a la API'
+            }
+
+        # Procesar la respuesta JSON
+        data = response.json()
+
+        # Obtener los últimos 10 sismos
+        ultimos_10_sismos = data[-10:]
+
+        # Crear una lista para almacenar los datos procesados
+        rows = []
+
+        # Extraer datos relevantes de cada sismo
+        for sismo in ultimos_10_sismos:
+            sismo_data = {
+                'id': str(uuid.uuid4()),  # Generar un ID único
+                'codigo': sismo.get('codigo', ''),
+                'fecha_local': sismo.get('fecha_local', ''),
+                'hora_local': sismo.get('hora_local', ''),
+                'latitud': sismo.get('latitud', ''),
+                'longitud': sismo.get('longitud', ''),
+                'magnitud': sismo.get('magnitud', ''),
+                'profundidad': sismo.get('profundidad', ''),
+                'referencia': sismo.get('referencia', ''),
+                'intensidad': sismo.get('intensidad', ''),
+                'reporte_acelerometrico_pdf': sismo.get('reporte_acelerometrico_pdf', '')
+            }
+            rows.append(sismo_data)
+
+        # Conectar a DynamoDB
+        dynamodb = boto3.resource('dynamodb')
+        table = dynamodb.Table('Sismos')
+
+        # Eliminar todos los elementos existentes en la tabla
+        scan = table.scan()
+        with table.batch_writer() as batch:
+            for each in scan.get('Items', []):
+                batch.delete_item(Key={'id': each['id']})
+
+        # Insertar los últimos 10 sismos en la tabla
+        with table.batch_writer() as batch:
+            for row in rows:
+                batch.put_item(Item=row)
+
+        # Retornar los datos procesados
+        return {
+            'statusCode': 200,
+            'body': json.dumps(rows)
+        }
+
+    except Exception as e:
+        # Manejar excepciones y retornar el error
+        return {
+            'statusCode': 500,
+            'body': f'Error en la ejecución: {str(e)}'
+        }
